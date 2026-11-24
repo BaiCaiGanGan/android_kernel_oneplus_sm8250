@@ -150,10 +150,8 @@ jobs:
 
           test -s out/arch/arm64/boot/Image.gz
           cp out/arch/arm64/boot/Image.gz artifacts/
-          [[ ! -s out/arch/arm64/boot/Image ]] || cp out/arch/arm64/boot/Image artifacts/
-          [[ ! -s out/System.map ]] || cp out/System.map artifacts/
-          [[ ! -s out/vmlinux ]] || cp out/vmlinux artifacts/
-
+          # Keep only flash/build-relevant kernel and device-tree outputs.
+          # Do not upload vmlinux, System.map, or the expanded modules_install tree.
           while IFS= read -r -d '' f; do
             rel="${f#out/arch/arm64/boot/}"
             dest="artifacts/dtb/$rel"
@@ -164,16 +162,9 @@ jobs:
               \( -name '*.dtb' -o -name '*.dtbo' \) -print0
           )
 
-          make O=out ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CC="$KERNEL_CC" LD="$KERNEL_LD" \
-            AR="$KERNEL_AR" NM="$KERNEL_NM" \
-            OBJCOPY="$KERNEL_OBJCOPY" OBJDUMP="$KERNEL_OBJDUMP" \
-            STRIP="$KERNEL_STRIP" LLVM_IAS=1 \
-            modules_install INSTALL_MOD_PATH="$GITHUB_WORKSPACE/artifacts/modules"
-
-          tar -czf artifacts/modules.tar.gz -C artifacts/modules .
+          DTB_COUNT=$(find artifacts/dtb -type f \( -name '*.dtb' -o -name '*.dtbo' \) | wc -l)
+          test "$DTB_COUNT" -gt 0
+          echo "Collected $DTB_COUNT DTB/DTBO files"
           {
             echo "Commit: $GITHUB_SHA"
             echo "Kernel: $(make kernelversion)"
