@@ -12,7 +12,6 @@ on:
     branches:
       - bpf-5.15-backport
     paths-ignore:
-      - ".github/**"
       - "*.md"
 
 permissions:
@@ -155,9 +154,15 @@ jobs:
           [[ ! -s out/System.map ]] || cp out/System.map artifacts/
           [[ ! -s out/vmlinux ]] || cp out/vmlinux artifacts/
 
-          find out/arch/arm64/boot -type f \
-            \( -name '*.dtb' -o -name '*.dtbo' \) \
-            -exec cp -t artifacts/dtb {} +
+          while IFS= read -r -d '' f; do
+            rel="${f#out/arch/arm64/boot/}"
+            dest="artifacts/dtb/$rel"
+            mkdir -p "$(dirname "$dest")"
+            cp "$f" "$dest"
+          done < <(
+            find out/arch/arm64/boot -type f \
+              \( -name '*.dtb' -o -name '*.dtbo' \) -print0
+          )
 
           make O=out ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
