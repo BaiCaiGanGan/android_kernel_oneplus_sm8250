@@ -38,13 +38,32 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential cpio flex \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            git libelf-dev libncurses-dev libssl-dev \
-            lld-14 llvm-14 clang-14 \
-            lz4 pahole python3 python3-dev rsync \
+          sudo apt-get install -y --no-install-recommends \\
+            bc bison build-essential cpio flex cmake pkg-config \\
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \\
+            git libelf-dev libdw-dev libncurses-dev libssl-dev zlib1g-dev \\
+            lld-14 llvm-14 clang-14 \\
+            lz4 python3 python3-dev rsync \\
             device-tree-compiler kmod zip zstd
+
+      - name: Build pahole with BTF feature support
+        run: |
+          set -euo pipefail
+          PAHOLE_SRC="$RUNNER_TEMP/dwarves"
+          git clone --depth 1 --branch v1.26 --recurse-submodules \\
+            https://github.com/acmel/dwarves.git "$PAHOLE_SRC"
+          cmake -S "$PAHOLE_SRC" -B "$PAHOLE_SRC/build" \\
+            -DCMAKE_BUILD_TYPE=Release \\
+            -DCMAKE_INSTALL_PREFIX=/usr/local \\
+            -D__LIB=lib
+          cmake --build "$PAHOLE_SRC/build" --parallel 2
+          sudo cmake --install "$PAHOLE_SRC/build"
+          sudo ldconfig
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          /usr/local/bin/pahole --version
+          /usr/local/bin/pahole --supported_btf_features | tee "$RUNNER_TEMP/pahole-btf-features.txt"
+          grep -Eq '(^|,)var(,|$)' "$RUNNER_TEMP/pahole-btf-features.txt"
+          grep -Eq '(^|,)float(,|$)' "$RUNNER_TEMP/pahole-btf-features.txt"
 
       - name: Select defconfig and toolchain
         shell: bash
@@ -97,29 +116,32 @@ jobs:
           "$KERNEL_CC" --version | head -n 1
           "$KERNEL_LD" --version | head -n 1
           aarch64-linux-gnu-gcc --version | head -n 1
+          command -v pahole
+          pahole --version
+          pahole --supported_btf_features
 
       - name: Configure kernel
         run: |
           set -euo pipefail
-          make O=out ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CC="$KERNEL_CC" LD="$KERNEL_LD" \
-            AR="$KERNEL_AR" NM="$KERNEL_NM" \
-            OBJCOPY="$KERNEL_OBJCOPY" OBJDUMP="$KERNEL_OBJDUMP" \
-            STRIP="$KERNEL_STRIP" LLVM_IAS=1 \
+          make O=out ARCH=arm64 \\
+            CROSS_COMPILE=aarch64-linux-gnu- \\
+            CLANG_TRIPLE=aarch64-linux-gnu- \\
+            CC="$KERNEL_CC" LD="$KERNEL_LD" \\
+            AR="$KERNEL_AR" NM="$KERNEL_NM" \\
+            OBJCOPY="$KERNEL_OBJCOPY" OBJDUMP="$KERNEL_OBJDUMP" \\
+            STRIP="$KERNEL_STRIP" LLVM_IAS=1 \\
             "$KERNEL_DEFCONFIG"
 
       - name: Build Image, DTBs and modules
         run: |
           set -euo pipefail
-          make O=out ARCH=arm64 -j4 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CC="$KERNEL_CC" LD="$KERNEL_LD" \
-            AR="$KERNEL_AR" NM="$KERNEL_NM" \
-            OBJCOPY="$KERNEL_OBJCOPY" OBJDUMP="$KERNEL_OBJDUMP" \
-            STRIP="$KERNEL_STRIP" LLVM_IAS=1 \
+          make O=out ARCH=arm64 -j4 \\
+            CROSS_COMPILE=aarch64-linux-gnu- \\
+            CLANG_TRIPLE=aarch64-linux-gnu- \\
+            CC="$KERNEL_CC" LD="$KERNEL_LD" \\
+            AR="$KERNEL_AR" NM="$KERNEL_NM" \\
+            OBJCOPY="$KERNEL_OBJCOPY" OBJDUMP="$KERNEL_OBJDUMP" \\
+            STRIP="$KERNEL_STRIP" LLVM_IAS=1 \\
             Image.gz dtbs modules
 
       - name: Collect build artifacts
@@ -133,17 +155,17 @@ jobs:
           [[ ! -s out/System.map ]] || cp out/System.map artifacts/
           [[ ! -s out/vmlinux ]] || cp out/vmlinux artifacts/
 
-          find out/arch/arm64/boot -type f \
-            \( -name '*.dtb' -o -name '*.dtbo' \) \
+          find out/arch/arm64/boot -type f \\
+            \\( -name '*.dtb' -o -name '*.dtbo' \\) \\
             -exec cp -t artifacts/dtb {} +
 
-          make O=out ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CC="$KERNEL_CC" LD="$KERNEL_LD" \
-            AR="$KERNEL_AR" NM="$KERNEL_NM" \
-            OBJCOPY="$KERNEL_OBJCOPY" OBJDUMP="$KERNEL_OBJDUMP" \
-            STRIP="$KERNEL_STRIP" LLVM_IAS=1 \
+          make O=out ARCH=arm64 \\
+            CROSS_COMPILE=aarch64-linux-gnu- \\
+            CLANG_TRIPLE=aarch64-linux-gnu- \\
+            CC="$KERNEL_CC" LD="$KERNEL_LD" \\
+            AR="$KERNEL_AR" NM="$KERNEL_NM" \\
+            OBJCOPY="$KERNEL_OBJCOPY" OBJDUMP="$KERNEL_OBJDUMP" \\
+            STRIP="$KERNEL_STRIP" LLVM_IAS=1 \\
             modules_install INSTALL_MOD_PATH="$GITHUB_WORKSPACE/artifacts/modules"
 
           tar -czf artifacts/modules.tar.gz -C artifacts/modules .
@@ -151,11 +173,12 @@ jobs:
             echo "Commit: $GITHUB_SHA"
             echo "Kernel: $(make kernelversion)"
             echo "Defconfig: $KERNEL_DEFCONFIG"
-            echo "Compiler: $("$KERNEL_CC" --version | head -n 1)"
+            echo "Compiler: $(""$KERNEL_CC"" --version | head -n 1)"
+            echo "Pahole: $(pahole --version)"
           } > artifacts/BUILD-INFO.txt
 
           echo "Collected files:"
-          find artifacts -maxdepth 3 -type f -printf '%p (%s bytes)\n' | sort
+          find artifacts -maxdepth 3 -type f -printf '%p (%s bytes)\\n' | sort
 
       - name: Upload kernel artifacts
         uses: actions/upload-artifact@v4
