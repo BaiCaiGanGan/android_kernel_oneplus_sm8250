@@ -113,7 +113,7 @@ jobs:
       - name: Build Image, DTBs and modules
         run: |
           set -euo pipefail
-          make O=out ARCH=arm64 -j2 \
+          make O=out ARCH=arm64 -j4 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CC="$KERNEL_CC" LD="$KERNEL_LD" \
