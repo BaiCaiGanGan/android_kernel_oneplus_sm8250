@@ -48,10 +48,12 @@ jobs:
 
       - name: Select defconfig and toolchain
         shell: bash
+        env:
+          DEFCONFIG_INPUT: ${{ inputs.defconfig }}
         run: |
           set -euo pipefail
 
-          DEFCONFIG="${{ inputs.defconfig }}"
+          DEFCONFIG="$DEFCONFIG_INPUT"
           if [[ -z "$DEFCONFIG" ]]; then
             DEFCONFIG="vendor/kona-perf_defconfig"
           fi
