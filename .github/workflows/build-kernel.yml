@@ -1,0 +1,164 @@
+name: Build OnePlus 9R SM8250 kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: "Defconfig path relative to arch/arm64/configs (default: vendor/kona-perf_defconfig)"
+        required: false
+        type: string
+        default: ""
+  push:
+    branches:
+      - bpf-5.15-backport
+    paths-ignore:
+      - ".github/**"
+      - "*.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernel-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build arm64 kernel (Linux 4.19)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential cpio flex \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            git libelf-dev libncurses-dev libssl-dev \
+            lld-14 llvm-14 clang-14 \
+            lz4 pahole python3 python3-dev rsync \
+            device-tree-compiler kmod zip zstd
+
+      - name: Select defconfig and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEFCONFIG="${{ inputs.defconfig }}"
+          if [[ -z "$DEFCONFIG" ]]; then
+            DEFCONFIG="vendor/kona-perf_defconfig"
+          fi
+
+          if [[ ! -f "arch/arm64/configs/$DEFCONFIG" ]]; then
+            echo "::error::Defconfig not found: arch/arm64/configs/$DEFCONFIG"
+            echo "Available vendor defconfigs:"
+            find arch/arm64/configs/vendor -maxdepth 1 -type f -name '*defconfig' -print 2>/dev/null | sort || true
+            exit 1
+          fi
+          echo "KERNEL_DEFCONFIG=$DEFCONFIG" >> "$GITHUB_ENV"
+          echo "Selected defconfig: $DEFCONFIG"
+
+          PREBUILT="$GITHUB_WORKSPACE/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
+          if [[ -x "$PREBUILT/clang" ]]; then
+            echo "$PREBUILT" >> "$GITHUB_PATH"
+            echo "KERNEL_CC=clang" >> "$GITHUB_ENV"
+            echo "KERNEL_LD=ld.lld" >> "$GITHUB_ENV"
+            echo "KERNEL_AR=llvm-ar" >> "$GITHUB_ENV"
+            echo "KERNEL_NM=llvm-nm" >> "$GITHUB_ENV"
+            echo "KERNEL_OBJCOPY=llvm-objcopy" >> "$GITHUB_ENV"
+            echo "KERNEL_OBJDUMP=llvm-objdump" >> "$GITHUB_ENV"
+            echo "KERNEL_STRIP=llvm-strip" >> "$GITHUB_ENV"
+            echo "Using repository-pinned clang-r416183b"
+          else
+            echo "KERNEL_CC=clang-14" >> "$GITHUB_ENV"
+            echo "KERNEL_LD=ld.lld-14" >> "$GITHUB_ENV"
+            echo "KERNEL_AR=llvm-ar-14" >> "$GITHUB_ENV"
+            echo "KERNEL_NM=llvm-nm-14" >> "$GITHUB_ENV"
+            echo "KERNEL_OBJCOPY=llvm-objcopy-14" >> "$GITHUB_ENV"
+            echo "KERNEL_OBJDUMP=llvm-objdump-14" >> "$GITHUB_ENV"
+            echo "KERNEL_STRIP=llvm-strip-14" >> "$GITHUB_ENV"
+            echo "Repository clang not present; using Ubuntu clang/LLVM 14"
+          fi
+
+      - name: Show build environment
+        run: |
+          set -euo pipefail
+          echo "Kernel version: $(make kernelversion)"
+          echo "Defconfig: $KERNEL_DEFCONFIG"
+          "$KERNEL_CC" --version | head -n 1
+          "$KERNEL_LD" --version | head -n 1
+          aarch64-linux-gnu-gcc --version | head -n 1
+
+      - name: Configure kernel
+        run: |
+          set -euo pipefail
+          make O=out ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CC="$KERNEL_CC" LD="$KERNEL_LD" \
+            AR="$KERNEL_AR" NM="$KERNEL_NM" \
+            OBJCOPY="$KERNEL_OBJCOPY" OBJDUMP="$KERNEL_OBJDUMP" \
+            STRIP="$KERNEL_STRIP" LLVM_IAS=1 \
+            "$KERNEL_DEFCONFIG"
+
+      - name: Build Image, DTBs and modules
+        run: |
+          set -euo pipefail
+          make O=out ARCH=arm64 -j2 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CC="$KERNEL_CC" LD="$KERNEL_LD" \
+            AR="$KERNEL_AR" NM="$KERNEL_NM" \
+            OBJCOPY="$KERNEL_OBJCOPY" OBJDUMP="$KERNEL_OBJDUMP" \
+            STRIP="$KERNEL_STRIP" LLVM_IAS=1 \
+            Image.gz dtbs modules
+
+      - name: Collect build artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/dtb
+
+          test -s out/arch/arm64/boot/Image.gz
+          cp out/arch/arm64/boot/Image.gz artifacts/
+          [[ ! -s out/arch/arm64/boot/Image ]] || cp out/arch/arm64/boot/Image artifacts/
+          [[ ! -s out/System.map ]] || cp out/System.map artifacts/
+          [[ ! -s out/vmlinux ]] || cp out/vmlinux artifacts/
+
+          find out/arch/arm64/boot -type f \
+            \( -name '*.dtb' -o -name '*.dtbo' \) \
+            -exec cp -t artifacts/dtb {} +
+
+          make O=out ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CC="$KERNEL_CC" LD="$KERNEL_LD" \
+            AR="$KERNEL_AR" NM="$KERNEL_NM" \
+            OBJCOPY="$KERNEL_OBJCOPY" OBJDUMP="$KERNEL_OBJDUMP" \
+            STRIP="$KERNEL_STRIP" LLVM_IAS=1 \
+            modules_install INSTALL_MOD_PATH="$GITHUB_WORKSPACE/artifacts/modules"
+
+          tar -czf artifacts/modules.tar.gz -C artifacts/modules .
+          {
+            echo "Commit: $GITHUB_SHA"
+            echo "Kernel: $(make kernelversion)"
+            echo "Defconfig: $KERNEL_DEFCONFIG"
+            echo "Compiler: $("$KERNEL_CC" --version | head -n 1)"
+          } > artifacts/BUILD-INFO.txt
+
+          echo "Collected files:"
+          find artifacts -maxdepth 3 -type f -printf '%p (%s bytes)\n' | sort
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: oneplus9r-kernel-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
